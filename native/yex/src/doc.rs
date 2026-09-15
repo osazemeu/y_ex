@@ -245,24 +245,6 @@ impl NifDoc {
         }
     }
 
-    pub fn get_or_insert_text(&self, name: &str) -> NifText {
-        NifText::new(self.clone(), self.reference.get_or_insert_text(name))
-    }
-    pub fn get_or_insert_array(&self, name: &str) -> NifArray {
-        NifArray::new(self.clone(), self.reference.get_or_insert_array(name))
-    }
-
-    pub fn get_or_insert_map(&self, name: &str) -> NifMap {
-        NifMap::new(self.clone(), self.reference.get_or_insert_map(name))
-    }
-
-    pub fn get_or_insert_xml_fragment(&self, name: &str) -> NifXmlFragment {
-        NifXmlFragment::new(
-            self.clone(),
-            self.reference.get_or_insert_xml_fragment(name),
-        )
-    }
-
     pub fn mutably<F, T>(
         &self,
         env: Env<'_>,
@@ -357,24 +339,67 @@ fn doc_with_options(option: NifOptions) -> NifDoc {
     NifDoc::with_options(option)
 }
 
+// Root types are created through the caller's open transaction when there is
+// one. yrs `Doc::get_or_insert_*` opens its own blocking write transaction,
+// which parks the scheduler thread forever inside `Yex.Doc.transaction`.
 #[rustler::nif]
-fn doc_get_or_insert_text(env: Env<'_>, doc: NifDoc, name: &str) -> NifText {
-    ENV.set(&mut env.clone(), || doc.get_or_insert_text(name))
+fn doc_get_or_insert_text(
+    env: Env<'_>,
+    doc: NifDoc,
+    current_transaction: Option<ResourceArc<TransactionResource>>,
+    name: &str,
+) -> NifResult<NifText> {
+    doc.mutably(env, current_transaction, |txn| {
+        Ok(NifText::new(
+            doc.clone(),
+            TextRef::root(name).get_or_create(txn),
+        ))
+    })
 }
 
 #[rustler::nif]
-fn doc_get_or_insert_array(env: Env<'_>, doc: NifDoc, name: &str) -> NifArray {
-    ENV.set(&mut env.clone(), || doc.get_or_insert_array(name))
+fn doc_get_or_insert_array(
+    env: Env<'_>,
+    doc: NifDoc,
+    current_transaction: Option<ResourceArc<TransactionResource>>,
+    name: &str,
+) -> NifResult<NifArray> {
+    doc.mutably(env, current_transaction, |txn| {
+        Ok(NifArray::new(
+            doc.clone(),
+            ArrayRef::root(name).get_or_create(txn),
+        ))
+    })
 }
 
 #[rustler::nif]
-fn doc_get_or_insert_map(env: Env<'_>, doc: NifDoc, name: &str) -> NifMap {
-    ENV.set(&mut env.clone(), || doc.get_or_insert_map(name))
+fn doc_get_or_insert_map(
+    env: Env<'_>,
+    doc: NifDoc,
+    current_transaction: Option<ResourceArc<TransactionResource>>,
+    name: &str,
+) -> NifResult<NifMap> {
+    doc.mutably(env, current_transaction, |txn| {
+        Ok(NifMap::new(
+            doc.clone(),
+            MapRef::root(name).get_or_create(txn),
+        ))
+    })
 }
 
 #[rustler::nif]
-fn doc_get_or_insert_xml_fragment(env: Env<'_>, doc: NifDoc, name: &str) -> NifXmlFragment {
-    ENV.set(&mut env.clone(), || doc.get_or_insert_xml_fragment(name))
+fn doc_get_or_insert_xml_fragment(
+    env: Env<'_>,
+    doc: NifDoc,
+    current_transaction: Option<ResourceArc<TransactionResource>>,
+    name: &str,
+) -> NifResult<NifXmlFragment> {
+    doc.mutably(env, current_transaction, |txn| {
+        Ok(NifXmlFragment::new(
+            doc.clone(),
+            XmlFragmentRef::root(name).get_or_create(txn),
+        ))
+    })
 }
 
 #[rustler::nif]
