@@ -423,6 +423,71 @@ defmodule Yex.Doc do
   end
 
   @doc """
+  Reports where applying the v1 `update` would leave a hole in a client's clock range.
+
+  Returns `{:ok, gaps}`, where `gaps` maps each affected client id to the first clock
+  the document is missing for that client. A client is reported when the update's
+  structs for it start above the document's clock for it, or leave out clocks the
+  document does not have either (for example a `Yex.merge_updates/1` result built from
+  non-adjacent updates). Structs the document already has are ignored.
+
+  Each reported clock is at or below the first clock the document will lack for
+  that client after the update is applied; a diff from the peer from that clock
+  fills the hole. An empty map means applying the update opens no hole the
+  document does not already have. Holes the document already holds were
+  reported when they opened and are not re-examined: the result is relative to
+  the document's state vector, which stops at the first hole, so an update that
+  fills part of such a hole returns an empty map, and one that fills it exactly
+  and continues above data the document already holds may name a clock the
+  document has.
+
+  Since yrs 0.27, a struct whose same-client predecessors are missing, but whose origin,
+  right origin and parent are all present, is integrated behind a skip instead of being
+  held as pending. It becomes readable, but it is not in `get_pending_update/1`, not in
+  the update delivered to `monitor_update/2` subscribers, and not in a diff encoded for
+  a peer whose state vector already reaches the hole. Call this before
+  `Yex.apply_update/2` to fetch the missing range first. A reported client whose origin
+  is also missing still goes to pending as before. Either way a report means "fetch
+  from this clock": once one of a client's structs pends, yrs pends the rest of that
+  client's structs in the update with it, so the reported clock is where the missing
+  range starts whether the struct would be skipped or held as pending.
+
+  Not covered: dependencies on other clients' structs and delete ranges. Those stay on
+  the pending path; see `get_pending_update/1`, `get_pending_ds/1` and
+  `prune_pending/1`.
+
+  The update is decoded as `Yex.apply_update/2` decodes it, so bytes that one cannot
+  decode, the other cannot either.
+
+  Works both inside and outside `transaction/3`. Outside one, the check and the apply
+  each open their own transaction, and another process can apply between them; run
+  `update_gaps/2` and `Yex.apply_update/2` inside one `transaction/3` to make the check
+  hold for the apply. Returns `{:error, term()}` when the update cannot be decoded.
+  Raises `Yex.TransactionAcqError` when a transaction held by another process prevents
+  opening one.
+  """
+  @spec update_gaps(t, binary()) :: {:ok, %{integer() => integer()}} | {:error, term()}
+  def update_gaps(%__MODULE__{} = doc, update) when is_binary(update) do
+    run_in_worker_process doc do
+      if byte_size(update) > Yex.Nif.dirty_cutoff(),
+        do: Yex.Nif.update_gaps_v1_dirty(doc, cur_txn(doc), update),
+        else: Yex.Nif.update_gaps_v1(doc, cur_txn(doc), update)
+    end
+  end
+
+  @doc """
+  Same as `update_gaps/2`, for a v2 encoded `update`.
+  """
+  @spec update_gaps_v2(t, binary()) :: {:ok, %{integer() => integer()}} | {:error, term()}
+  def update_gaps_v2(%__MODULE__{} = doc, update) when is_binary(update) do
+    run_in_worker_process doc do
+      if byte_size(update) > Yex.Nif.dirty_cutoff(),
+        do: Yex.Nif.update_gaps_v2_dirty(doc, cur_txn(doc), update),
+        else: Yex.Nif.update_gaps_v2(doc, cur_txn(doc), update)
+    end
+  end
+
+  @doc """
   Start a transaction.
 
   Raises `Yex.TransactionAcqError` if a transaction is already in progress.
