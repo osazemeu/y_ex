@@ -21,7 +21,7 @@ use crate::{
     error::Error,
     subscription::NifSubscription,
     term_box::TermBox,
-    transaction::{ReadTransaction, TransactionResource},
+    transaction::{take_then_drop, ReadTransaction, TransactionResource},
     utils::{origin_to_term, term_to_origin_binary},
     wrap::SliceIntoBinary,
     xml::NifXmlFragment,
@@ -471,9 +471,7 @@ fn doc_begin_transaction(
 #[rustler::nif]
 fn commit_transaction(env: Env<'_>, current_transaction: ResourceArc<TransactionResource>) {
     ENV.set(&mut env.clone(), || {
-        if let Ok(mut txn) = current_transaction.0.write() {
-            *txn = None;
-        }
+        take_then_drop(&current_transaction.0);
     })
 }
 
@@ -486,6 +484,9 @@ fn doc_monitor_update_v1(
     let metadata = TermBox::new(metadata);
 
     doc.observe_update_v1(move |txn, event| {
+        if !ENV.is_set() {
+            return;
+        }
         ENV.with(|env| {
             let metadata = metadata.get(*env);
             let _ = env.send(
@@ -518,6 +519,9 @@ fn doc_monitor_update_v2(
 ) -> NifResult<(Atom, NifSubscription)> {
     let metadata = TermBox::new(metadata);
     doc.observe_update_v2(move |txn, event| {
+        if !ENV.is_set() {
+            return;
+        }
         ENV.with(|env| {
             let metadata = metadata.get(*env);
             let _ = env.send(
@@ -812,6 +816,9 @@ fn doc_monitor_subdocs(
     let metadata = TermBox::new(metadata);
     let event_doc = doc.clone();
     doc.observe_subdocs(move |txn, event: &SubdocsEvent| {
+        if !ENV.is_set() {
+            return;
+        }
         ENV.with(|env| {
             let active_subdoc_guids: HashSet<String> =
                 txn.subdoc_guids().map(|guid| guid.to_string()).collect();

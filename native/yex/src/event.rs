@@ -407,6 +407,9 @@ where
 
             let doc_ref = doc.clone();
             let sub = ref_value.observe_deep(move |txn, events| {
+                if !ENV.is_set() {
+                    return;
+                }
                 ENV.with(|env| {
                     let events: Vec<NifEvent> = events
                         .iter()
@@ -458,6 +461,9 @@ where
 
             let doc_ref = doc.clone();
             let sub = ref_value.observe(move |txn, event| {
+                if !ENV.is_set() {
+                    return;
+                }
                 ENV.with(|env| {
                     let _ = env.send(
                         &pid,

@@ -127,6 +127,9 @@ fn awareness_monitor_update(
     let sub = awareness
         .reference
         .on_update(move |_awareness, event, origin| {
+            if !ENV.is_set() {
+                return;
+            }
             let summary = event.summary();
 
             let summary = NifAwarenessUpdateSummary {
@@ -163,6 +166,9 @@ fn awareness_monitor_change(
     let sub = awareness
         .reference
         .on_change(move |_awareness, event, origin| {
+            if !ENV.is_set() {
+                return;
+            }
             let summary = event.summary();
 
             let summary = NifAwarenessUpdateSummary {
