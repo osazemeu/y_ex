@@ -907,6 +907,8 @@ defmodule Yex.DocTest do
     test "a process that dies with an open transaction leaves the VM up and the doc usable" do
       doc = Doc.new()
       text = Doc.get_text(doc, "text")
+      map = Doc.get_map(doc, "map")
+      subdoc = Doc.with_options(%Doc.Options{guid: "sub"})
       {:ok, _} = Doc.monitor_update(doc)
       {:ok, _} = Doc.monitor_subdocs(doc)
       Yex.SharedType.observe(text)
@@ -917,9 +919,12 @@ defmodule Yex.DocTest do
         spawn(fn ->
           doc = %{doc | worker_pid: self()}
           text = %{text | doc: doc}
+          map = %{map | doc: doc}
 
           Doc.transaction(doc, fn ->
             Text.insert(text, 0, "Hello")
+            # Adding a subdoc makes the destructor's commit run the observe_subdocs callback.
+            Yex.Map.set(map, "sub", subdoc)
             send(test_pid, :inserted)
 
             receive do
@@ -955,5 +960,9 @@ defmodule Yex.DocTest do
       else
         reraise e, __STACKTRACE__
       end
+  end
+
+  defp wait_until_readable(_text, _timeout) do
+    flunk("the document is still locked: the killed process's transaction was never committed")
   end
 end
