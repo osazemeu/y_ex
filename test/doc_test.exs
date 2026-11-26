@@ -769,6 +769,47 @@ defmodule Yex.DocTest do
     end
   end
 
+  describe "malformed update shapes" do
+    # Client 1 sets k0 (clock 0) on map "m".
+    defp k0_doc do
+      doc = Doc.with_options(%Doc.Options{client_id: 1})
+      Yex.Map.set(Doc.get_map(doc, "m"), "k0", 0)
+      doc
+    end
+
+    defp snapshot(doc) do
+      {Yex.encode_state_vector!(doc), Yex.encode_state_as_update!(doc),
+       Yex.Map.to_map(Doc.get_map(doc, "m"))}
+    end
+
+    defp assert_refused(doc, update) do
+      before = snapshot(doc)
+      assert {:error, {:encoding_exception, _}} = Doc.update_gaps(doc, update)
+      assert {:error, {:encoding_exception, _}} = Yex.apply_update(doc, update)
+      assert snapshot(doc) == before
+    end
+
+    test "a struct clock range past u32::MAX is refused" do
+      # Client 1, clock 1: deleted content of length 0xFFFFFFFF under root "t".
+      update = <<1, 1, 1, 1, 1, 1, 1, ?t, 0xFF, 0xFF, 0xFF, 0xFF, 0x0F, 0>>
+
+      doc = Doc.new()
+      :ok = Yex.apply_update(doc, Yex.encode_state_as_update!(k0_doc()))
+      assert_refused(doc, update)
+      assert {:ok, 0.0} = Yex.Map.fetch(Doc.get_map(doc, "m"), "k0")
+    end
+
+    test "a client listed twice is refused" do
+      # <<1>> client count, the struct section, <<0>> empty delete set.
+      <<1, rest::binary>> = Yex.encode_state_as_update!(k0_doc())
+      section = binary_part(rest, 0, byte_size(rest) - 1)
+      assert <<0>> = binary_part(rest, byte_size(rest) - 1, 1)
+      update = <<2>> <> section <> section <> <<0>>
+
+      assert_refused(Doc.new(), update)
+    end
+  end
+
   describe "prune_pending" do
     defp gapped_update do
       a = Doc.new()

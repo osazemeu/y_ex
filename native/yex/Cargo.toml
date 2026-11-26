@@ -23,3 +23,9 @@ default = ["nif_version_2_15"]
 nif_version_2_15 = ["rustler/nif_version_2_15"]
 nif_version_2_16 = ["rustler/nif_version_2_16"]
 nif_version_2_17 = ["rustler/nif_version_2_17"]
+
+# Rejects a client listed twice and a clock range past u32::MAX when decoding
+# an update (osazemeu/y-crdt legendary/decode-guards-0.28.2 on yrs v0.28.2).
+# Drop this once an upstream yrs release rejects both shapes.
+[patch.crates-io]
+yrs = { git = "https://github.com/osazemeu/y-crdt", rev = "3df0555c2e67bae05e91ec5e0cc5fa259ed8c9a4" }
