@@ -7,6 +7,7 @@ rustler::atoms! {
     poison_error,
 
     encoding_exception,
+    nesting_too_deep,
     update_v1,
     update_v2,
     subdocs,

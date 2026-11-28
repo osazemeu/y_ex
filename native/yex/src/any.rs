@@ -1,5 +1,8 @@
+use std::cell::Cell;
 use std::collections::HashMap;
 use std::sync::Arc;
+
+use crate::error::ArgumentError;
 
 use crate::wrap::{make_list, make_map, NifStr, NifWrap};
 use rustler::dynamic::TermType;
@@ -85,6 +88,85 @@ impl rustler::Encoder for NifAny {
         encode(env, &self.0)
     }
 }
+/// The deepest a term may nest when it is decoded into an [Any] or a prelim: every prelim
+/// level ([NifYInput](crate::yinput::NifYInput) holding a prelim, and
+/// [NifXmlIn](crate::yinput::NifXmlIn)) and every list or map of an `Any` counts one. Decoding, integration, encoding and yrs
+/// recurse once per level on the scheduler's stack, so an unbounded term (a few kilobytes of
+/// nested maps) overflows it and kills the VM. It is yrs' own `Any` cap, so anything written
+/// here also decodes from the doc's state, and it sits inside yrs' shared-type cap (128).
+pub(crate) const MAX_DECODE_DEPTH: usize = yrs::Any::MAX_DEPTH;
+
+thread_local! {
+    static DECODE_DEPTH: Cell<usize> = const { Cell::new(0) };
+    // Set when a level was refused, so a decoder that tries alternatives (`NifYInput`,
+    // `NifXmlIn`) reports the refusal instead of reading it as "not this variant".
+    static DECODE_TOO_DEEP: Cell<bool> = const { Cell::new(false) };
+    // How many such decoders are running on this thread; the flag lives as long as the
+    // outermost one.
+    static DECODE_SCOPES: Cell<usize> = const { Cell::new(0) };
+}
+
+/// One level of nesting held while a nested term decodes.
+pub(crate) struct DepthGuard(());
+
+impl DepthGuard {
+    pub(crate) fn enter() -> NifResult<DepthGuard> {
+        let depth = DECODE_DEPTH.with(Cell::get);
+        if depth >= MAX_DECODE_DEPTH {
+            DECODE_TOO_DEEP.with(|flag| flag.set(true));
+            return Err(too_deep());
+        }
+        DECODE_DEPTH.with(|cell| cell.set(depth + 1));
+        Ok(DepthGuard(()))
+    }
+}
+
+impl Drop for DepthGuard {
+    fn drop(&mut self) {
+        DECODE_DEPTH.with(|cell| cell.set(cell.get() - 1));
+    }
+}
+
+/// Held by a decoder that tries alternatives. The outermost one starts and ends with the
+/// refusal flag clear, so a refusal never leaks into another decode or NIF call.
+pub(crate) struct DecodeScope(());
+
+impl DecodeScope {
+    pub(crate) fn enter() -> DecodeScope {
+        let scopes = DECODE_SCOPES.with(Cell::get);
+        if scopes == 0 {
+            DECODE_TOO_DEEP.with(|flag| flag.set(false));
+        }
+        DECODE_SCOPES.with(|cell| cell.set(scopes + 1));
+        DecodeScope(())
+    }
+
+    /// The refusal error, when a nested decode inside this scope was refused.
+    pub(crate) fn refused(&self) -> NifResult<()> {
+        if DECODE_TOO_DEEP.with(Cell::get) {
+            Err(too_deep())
+        } else {
+            Ok(())
+        }
+    }
+}
+
+impl Drop for DecodeScope {
+    fn drop(&mut self) {
+        let scopes = DECODE_SCOPES.with(Cell::get) - 1;
+        DECODE_SCOPES.with(|cell| cell.set(scopes));
+        if scopes == 0 {
+            DECODE_TOO_DEEP.with(|flag| flag.set(false));
+        }
+    }
+}
+
+fn too_deep() -> Error {
+    ArgumentError::raise(&format!(
+        "value nested deeper than {MAX_DECODE_DEPTH} levels"
+    ))
+}
+
 fn decode<'a>(term: Term<'a>) -> NifResult<Any> {
     match term.get_type() {
         TermType::Atom => {
@@ -115,6 +197,7 @@ fn decode<'a>(term: Term<'a>) -> NifResult<Any> {
                 .map(|v| Any::Buffer(v.as_slice().into()))
         }
         TermType::List => {
+            let _level = DepthGuard::enter()?;
             let iter = term.decode::<ListIterator<'a>>()?;
             let values = iter
                 .map(decode)
@@ -127,6 +210,7 @@ fn decode<'a>(term: Term<'a>) -> NifResult<Any> {
                 return Ok(Any::Buffer(buffer.data.as_slice().into()));
             }
 
+            let _level = DepthGuard::enter()?;
             let mut values = HashMap::with_capacity(term.map_size()?);
             for (k, v) in term.decode::<MapIterator<'a>>()? {
                 values.insert(k.decode::<String>()?, decode(v)?);

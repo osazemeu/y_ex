@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 
 use crate::{
-    any::{NifAny, NifAttr},
+    any::{DecodeScope, DepthGuard, NifAny, NifAttr},
     array::NifArray,
     atoms,
     doc::{try_parent_doc, NifDoc},
@@ -149,29 +149,41 @@ pub enum NifYInput {
 // Written by hand instead of derived with NifUntaggedEnum, which turns every variant's
 // error into `invalid_variant`: a document that cannot be inserted has to raise its own
 // error. Variants are tried in the order the derive used.
+// A prelim level holds a `DepthGuard` (an `Any` counts its own lists and maps), and a
+// refusal below it is returned as is rather than read as "not this variant" (see
+// `MAX_DECODE_DEPTH`).
 impl<'a> Decoder<'a> for NifYInput {
     fn decode(term: Term<'a>) -> NifResult<Self> {
+        let scope = DecodeScope::enter();
         if let Ok(v) = NifAny::decode(term) {
             return Ok(NifYInput::Any(v));
         }
+        scope.refused()?;
+        let _level = DepthGuard::enter()?;
         if let Ok(v) = NifMapPrelim::decode(term) {
             return Ok(NifYInput::MapPrelim(v));
         }
+        scope.refused()?;
         if let Ok(v) = NifArrayPrelim::decode(term) {
             return Ok(NifYInput::ArrayPrelim(v));
         }
+        scope.refused()?;
         if let Ok(v) = NifTextPrelim::decode(term) {
             return Ok(NifYInput::TextPrelim(v));
         }
+        scope.refused()?;
         if let Ok(v) = NifXmlTextPrelim::decode(term) {
             return Ok(NifYInput::XmlTextPrelim(v));
         }
+        scope.refused()?;
         if let Ok(v) = NifXmlElementPrelim::decode(term) {
             return Ok(NifYInput::XmlElementPrelim(v));
         }
+        scope.refused()?;
         if let Ok(v) = NifXmlFragmentPrelim::decode(term) {
             return Ok(NifYInput::XmlFragmentPrelim(v));
         }
+        scope.refused()?;
         if let Ok(v) = NifWeakPrelim::decode(term) {
             return Ok(NifYInput::WeakPrelim(v));
         }
@@ -341,11 +353,43 @@ impl Prelim for NifYInput {
     }
 }
 
-#[derive(NifUntaggedEnum)]
 pub enum NifXmlIn {
     Text(NifXmlTextPrelim),
     Element(NifXmlElementPrelim),
     Fragment(NifXmlFragmentPrelim),
+}
+
+// Written by hand instead of derived with NifUntaggedEnum so that each level holds a
+// `DepthGuard` and a refusal below it is not read as "not this variant". Variants are tried
+// in the order the derive used, and a term matching none is `invalid_variant` as before.
+impl<'a> Decoder<'a> for NifXmlIn {
+    fn decode(term: Term<'a>) -> NifResult<Self> {
+        let scope = DecodeScope::enter();
+        let _level = DepthGuard::enter()?;
+        if let Ok(v) = NifXmlTextPrelim::decode(term) {
+            return Ok(NifXmlIn::Text(v));
+        }
+        scope.refused()?;
+        if let Ok(v) = NifXmlElementPrelim::decode(term) {
+            return Ok(NifXmlIn::Element(v));
+        }
+        scope.refused()?;
+        if let Ok(v) = NifXmlFragmentPrelim::decode(term) {
+            return Ok(NifXmlIn::Fragment(v));
+        }
+        scope.refused()?;
+        Err(Error::RaiseAtom("invalid_variant"))
+    }
+}
+
+impl Encoder for NifXmlIn {
+    fn encode<'a>(&self, env: Env<'a>) -> Term<'a> {
+        match self {
+            NifXmlIn::Text(v) => v.encode(env),
+            NifXmlIn::Element(v) => v.encode(env),
+            NifXmlIn::Fragment(v) => v.encode(env),
+        }
+    }
 }
 
 impl XmlPrelim for NifXmlIn {}
@@ -415,10 +459,7 @@ fn decode_delta(term: Term<'_>) -> NifResult<Delta<NifYInput>> {
         .map_get(atoms::insert())
         .or_else(|_| term.map_get("insert"))
     {
-        let attrs = attributes.map_or(None, |s| {
-            s.decode()
-                .map_or(None, |attr: NifAttr| Some(Box::new(attr.0)))
-        });
+        let attrs = decode_delta_attributes(attributes)?;
         return Ok(Delta::Inserted(insert.decode::<NifYInput>()?, attrs));
     }
     if let Ok(delete) = term
@@ -434,14 +475,25 @@ fn decode_delta(term: Term<'_>) -> NifResult<Delta<NifYInput>> {
         .or_else(|_| term.map_get("retain"))
     {
         if let Ok(len) = retain.decode::<u32>() {
-            let attrs = attributes.map_or(None, |s| {
-                s.decode()
-                    .map_or(None, |attr: NifAttr| Some(Box::new(attr.0)))
-            });
+            let attrs = decode_delta_attributes(attributes)?;
             return Ok(Delta::Retain(len, attrs));
         }
     }
     Err(rustler::Error::BadArg)
+}
+
+// Attributes that do not decode are dropped, as before, except a depth refusal, which
+// the plain decode would also swallow.
+fn decode_delta_attributes(
+    attributes: NifResult<Term<'_>>,
+) -> NifResult<Option<Box<yrs::types::Attrs>>> {
+    let scope = DecodeScope::enter();
+    let attrs = attributes
+        .ok()
+        .and_then(|s| s.decode::<NifAttr>().ok())
+        .map(|attr| Box::new(attr.0));
+    scope.refused()?;
+    Ok(attrs)
 }
 
 fn encode_delta<'a>(env: Env<'a>, delta: &Delta<NifYInput>) -> Term<'a> {

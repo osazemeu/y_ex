@@ -51,6 +51,11 @@ impl rustler::Encoder for Error {
                 (atoms::encoding_exception(), error.to_string()),
             )
                 .encode(env),
+            // A shared type past yrs' depth cap: its own reason, so a caller can tell a
+            // hostile nesting from a malformed update.
+            Error::Update(yrs::error::UpdateError::TooDeep(_, _)) => {
+                (atoms::error(), atoms::nesting_too_deep()).encode(env)
+            }
             Error::Update(error) => (atoms::error(), error.to_string()).encode(env),
             Error::Awareness(error) => (atoms::error(), error.to_string()).encode(env),
             Error::Message(error) => (atoms::error(), error).encode(env),
@@ -91,6 +96,9 @@ impl From<Error> for rustler::Error {
             Error::Transaction => rustler::Error::RaiseTerm(Box::new(TransactionAcqError::new())),
             Error::Encoding(error) => {
                 rustler::Error::Term(Box::new((atoms::encoding_exception(), error.to_string())))
+            }
+            Error::Update(yrs::error::UpdateError::TooDeep(_, _)) => {
+                rustler::Error::Term(Box::new(atoms::nesting_too_deep()))
             }
             Error::Update(error) => rustler::Error::Term(Box::new(error.to_string())),
             Error::Awareness(error) => rustler::Error::Term(Box::new(error.to_string())),

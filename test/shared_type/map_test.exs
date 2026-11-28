@@ -11,16 +11,24 @@ defmodule Yex.MapTest do
   end
 
   describe "deeply nested values" do
-    # A peer can send a value nested this deep. Encoding recurses once per level, and the
-    # dirty twins run on dirty CPU schedulers, whose stacks are a fraction of a normal one
-    # (40 kilowords by default), so a large frame per level crashes the VM.
+    # Encoding recurses once per level, and the dirty twins run on dirty CPU schedulers,
+    # whose stacks are a fraction of a normal one (40 kilowords by default), so a large
+    # frame per level crashes the VM. A value may nest 127 levels (deeper is refused on
+    # write and on decode, see depth_cap_test.exs), so that is the depth to convert.
     test "convert on a dirty scheduler", %{map: map} do
-      # 400 maps, each holding a list: 800 levels.
-      nested = Enum.reduce(1..400, "leaf", fn _, acc -> %{"k" => [acc]} end)
+      # A list, then 63 maps each holding a list: 127 levels.
+      nested = Enum.reduce(1..63, ["leaf"], fn _, acc -> %{"k" => [acc]} end)
       :ok = Map.set(map, "v", nested)
 
       assert %{"v" => ^nested} = Yex.Nif.map_to_json_dirty(map, nil)
       assert %{"v" => ^nested} = Map.to_map(map)
+    end
+
+    test "past the cap are refused on write", %{map: map} do
+      # 400 maps, each holding a list: 800 levels, which this test once wrote.
+      nested = Enum.reduce(1..400, "leaf", fn _, acc -> %{"k" => [acc]} end)
+      assert_raise ArgumentError, fn -> Map.set(map, "v", nested) end
+      assert Map.to_map(map) == %{}
     end
   end
 
