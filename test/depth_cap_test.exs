@@ -228,6 +228,96 @@ defmodule Yex.DepthCapTest do
       end
     end
 
+    # Each kind wraps `inner` with a one-level sibling placed before it, so a count
+    # that reads only the first child, or that stops at one level for a kind, comes
+    # out short. A fragment's child must be an XML prelim, hence the order.
+    @mixed_kinds [:fragment, :element_attr, :text_attr, :text_delta, :map, :array, :text]
+
+    defp wrap(:map, inner), do: MapPrelim.from(%{"a" => MapPrelim.from(%{}), "z" => inner})
+    defp wrap(:array, inner), do: ArrayPrelim.from([MapPrelim.from(%{}), inner])
+
+    defp wrap(:text, inner),
+      do: TextPrelim.from([%{insert: MapPrelim.from(%{})}, %{insert: inner}])
+
+    defp wrap(:element_attr, inner),
+      do:
+        XmlElementPrelim.new("e", [XmlElementPrelim.empty("s")], %{
+          "a" => MapPrelim.from(%{}),
+          "z" => inner
+        })
+
+    defp wrap(:text_attr, inner),
+      do: %{XmlTextPrelim.from("") | attributes: %{"a" => MapPrelim.from(%{}), "z" => inner}}
+
+    defp wrap(:text_delta, inner),
+      do: XmlTextPrelim.from([%{insert: MapPrelim.from(%{})}, %{insert: inner}])
+
+    defp wrap(:fragment, inner),
+      do: XmlFragmentPrelim.new([XmlElementPrelim.empty("s"), inner])
+
+    defp empty(:map), do: MapPrelim.from(%{})
+    defp empty(:array), do: ArrayPrelim.from([])
+    defp empty(:text), do: TextPrelim.from("")
+    defp empty(:element_attr), do: XmlElementPrelim.empty("e")
+    defp empty(kind) when kind in [:text_attr, :text_delta], do: XmlTextPrelim.from("")
+    defp empty(:fragment), do: XmlFragmentPrelim.new([])
+
+    # `levels` shared-type levels, the kinds cycling from `offset`.
+    defp mixed_chain(levels, offset) do
+      kinds =
+        for i <- 0..(levels - 1), do: Enum.at(@mixed_kinds, rem(i + offset, length(@mixed_kinds)))
+
+      [innermost | outer] = Enum.reverse(kinds)
+      Enum.reduce(outer, empty(innermost), &wrap/2)
+    end
+
+    test "a mixed-kind prelim counts every level of every kind" do
+      for offset <- 0..(length(@mixed_kinds) - 1) do
+        {doc, parent} = container_at(100, MapPrelim.from(%{}))
+        before = Yex.encode_state_vector!(doc)
+
+        # parent depth 100 + prelim 29 = 129
+        assert_raise ArgumentError, ~r/deeper than #{@type_cap} levels/, fn ->
+          Yex.Map.set(parent, "k", mixed_chain(29, offset))
+        end
+
+        assert Yex.encode_state_vector!(doc) == before
+
+        # parent depth 100 + prelim 28 = 128
+        :ok = Yex.Map.set(parent, "k", mixed_chain(28, offset))
+        state = Yex.encode_state_as_update!(doc)
+
+        for apply <- [&Yex.apply_update/2, &apply_dirty/2] do
+          assert :ok = apply.(Doc.new(), state), "offset #{offset} did not reload"
+        end
+      end
+    end
+
+    test "a weak link is one level" do
+      for {depth, refused?} <- [{@type_cap, true}, {@type_cap - 1, false}] do
+        {doc, parent} = container_at(depth, MapPrelim.from(%{}))
+        source = Doc.get_map(doc, "src")
+        :ok = Yex.Map.set(source, "v", "linked")
+        link = Yex.Map.link(source, "v")
+        before = Yex.encode_state_vector!(doc)
+
+        if refused? do
+          assert_raise ArgumentError, ~r/deeper than #{@type_cap} levels/, fn ->
+            Yex.Map.set(parent, "w", link)
+          end
+
+          assert Yex.encode_state_vector!(doc) == before
+        else
+          :ok = Yex.Map.set(parent, "w", link)
+          state = Yex.encode_state_as_update!(doc)
+
+          for apply <- [&Yex.apply_update/2, &apply_dirty/2] do
+            assert :ok = apply.(Doc.new(), state)
+          end
+        end
+      end
+    end
+
     test "one level per call stops at the cap, and the chain reloads" do
       doc = Doc.new()
       root = Doc.get_map(doc, "m")
