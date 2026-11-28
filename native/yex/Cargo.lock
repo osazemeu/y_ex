@@ -623,7 +623,7 @@ dependencies = [
 [[package]]
 name = "yrs"
 version = "0.28.2"
-source = "git+https://github.com/osazemeu/y-crdt?rev=e202671d4a26d6756979c51373dd26d2a5c12e97#e202671d4a26d6756979c51373dd26d2a5c12e97"
+source = "git+https://github.com/osazemeu/y-crdt?rev=d97075f8ee1db9adc934684825d9bc33c50b89b3#d97075f8ee1db9adc934684825d9bc33c50b89b3"
 dependencies = [
  "arc-swap",
  "async-lock",

@@ -5,7 +5,7 @@ use crate::shared_type::NifSharedType;
 use crate::shared_type::SharedTypeId;
 use crate::transaction::{exceeds_item_limit, TransactionResource};
 use crate::wrap::{NifMapPairs, NifStr};
-use crate::yinput::NifWeakPrelim;
+use crate::yinput::{check_nesting, NifWeakPrelim};
 use crate::{yinput::NifYInput, youtput::NifYOut, NifAny};
 use rustler::{Atom, Encoder, Env, NifResult, NifStruct, ResourceArc, Term};
 use yrs::types::ToJson;
@@ -53,6 +53,7 @@ fn map_set(
 ) -> NifResult<Atom> {
     map.mutably(env, current_transaction, |txn| {
         let map = map.get_ref(txn)?;
+        check_nesting(&map, &value)?;
         value.ensure_insertable(txn)?;
         map.insert(txn, key, value);
         Ok(atoms::ok())

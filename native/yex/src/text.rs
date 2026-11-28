@@ -17,7 +17,7 @@ use crate::{
     shared_type::{NifSharedType, SharedTypeId},
     snapshot::known_clients_only,
     transaction::TransactionResource,
-    yinput::{NifYInput, NifYInputDelta},
+    yinput::{check_nesting, NifYInput, NifYInputDelta},
     youtput::NifYOut,
 };
 
@@ -98,6 +98,7 @@ fn text_insert_embed(
 ) -> NifResult<Atom> {
     text.mutably(env, current_transaction, |txn| {
         let text = text.get_ref(txn)?;
+        check_nesting(&text, &embed)?;
         embed.ensure_insertable(txn)?;
         let index = normalize_index_for_insert(text.len(txn), index);
         let mut delta = Vec::with_capacity(2);
@@ -121,6 +122,7 @@ fn text_insert_embed_with_attributes(
 ) -> NifResult<Atom> {
     text.mutably(env, current_transaction, |txn| {
         let text = text.get_ref(txn)?;
+        check_nesting(&text, &embed)?;
         embed.ensure_insertable(txn)?;
         let index = normalize_index_for_insert(text.len(txn), index);
         let mut delta = Vec::with_capacity(2);
@@ -282,6 +284,7 @@ fn text_apply_delta(
 ) -> NifResult<Atom> {
     text.mutably(env, current_transaction, |txn| {
         let text = text.get_ref(txn)?;
+        check_nesting(&text, &delta)?;
         delta.ensure_insertable(txn)?;
         text.apply_delta(txn, delta.0);
         Ok(atoms::ok())

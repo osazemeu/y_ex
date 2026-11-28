@@ -572,3 +572,75 @@ impl NifSharedTypeInput {
         with_shared_type!(self, v => (v.doc(), v.reference().id()))
     }
 }
+
+/// How many shared-type levels an input adds below the type it is inserted into: 0 for a
+/// plain `Any` (its own lists and maps are values, not types) or a document, 1 for a prelim
+/// with no prelim inside, and so on. The recursion is bounded: decoding refused anything
+/// past `MAX_DECODE_DEPTH` prelim levels.
+pub trait TypeLevels {
+    fn type_levels(&self) -> usize;
+}
+
+impl TypeLevels for NifYInput {
+    fn type_levels(&self) -> usize {
+        match self {
+            NifYInput::Any(_) | NifYInput::Doc(_) => 0,
+            NifYInput::WeakPrelim(_) => 1,
+            NifYInput::MapPrelim(v) => 1 + max_levels(v.map.values()),
+            NifYInput::ArrayPrelim(v) => 1 + max_levels(v.list.iter()),
+            NifYInput::TextPrelim(v) => 1 + v.delta.type_levels(),
+            NifYInput::XmlTextPrelim(v) => 1 + xml_text_levels(v),
+            NifYInput::XmlElementPrelim(v) => 1 + xml_element_levels(v),
+            NifYInput::XmlFragmentPrelim(v) => 1 + max_levels(v.children.iter()),
+        }
+    }
+}
+
+impl TypeLevels for NifXmlIn {
+    fn type_levels(&self) -> usize {
+        1 + match self {
+            NifXmlIn::Text(v) => xml_text_levels(v),
+            NifXmlIn::Element(v) => xml_element_levels(v),
+            NifXmlIn::Fragment(v) => max_levels(v.children.iter()),
+        }
+    }
+}
+
+impl TypeLevels for NifYInputDelta {
+    fn type_levels(&self) -> usize {
+        max_levels(self.iter().filter_map(|delta| match delta {
+            Delta::Inserted(value, _) => Some(value),
+            _ => None,
+        }))
+    }
+}
+
+fn xml_text_levels(v: &NifXmlTextPrelim) -> usize {
+    max_levels(v.attributes.values()).max(v.delta.type_levels())
+}
+
+fn xml_element_levels(v: &NifXmlElementPrelim) -> usize {
+    max_levels(v.attributes.values()).max(max_levels(v.children.iter()))
+}
+
+fn max_levels<'a, T: TypeLevels + 'a>(items: impl Iterator<Item = &'a T>) -> usize {
+    items.map(TypeLevels::type_levels).max().unwrap_or(0)
+}
+
+/// Raises ArgumentError when inserting `input` into `parent` would nest a shared type deeper
+/// than `yrs::Update::MAX_TYPE_DEPTH` (root = 0). yrs checks that depth only when it
+/// integrates a remote update, so a local insert past it builds a doc whose own encoded
+/// state every peer refuses. Call it before any write.
+pub fn check_nesting<P: AsRef<Branch>, I: TypeLevels>(parent: &P, input: &I) -> NifResult<()> {
+    let levels = input.type_levels();
+    if levels == 0 {
+        return Ok(());
+    }
+    if parent.as_ref().depth() + levels > yrs::Update::MAX_TYPE_DEPTH {
+        return Err(ArgumentError::raise(&format!(
+            "value nests shared types deeper than {} levels",
+            yrs::Update::MAX_TYPE_DEPTH
+        )));
+    }
+    Ok(())
+}

@@ -14,7 +14,9 @@ use crate::{
     transaction::{ReadTransaction, TransactionResource},
     utils::{capped_index_and_length, normalize_index, normalize_index_for_insert},
     wrap::NifMapPairs,
-    yinput::{NifSharedTypeInput, NifWeakPrelim, NifXmlIn, NifYInput, NifYInputDelta},
+    yinput::{
+        check_nesting, NifSharedTypeInput, NifWeakPrelim, NifXmlIn, NifYInput, NifYInputDelta,
+    },
     youtput::NifYOut,
     ENV,
 };
@@ -136,6 +138,7 @@ fn xml_fragment_insert(
     ENV.set(&mut env.clone(), || {
         xml.mutably(env, current_transaction, |txn| {
             let xml = xml.get_ref(txn)?;
+            check_nesting(&xml, &value)?;
             let index = normalize_index_for_insert(xml.len(txn), index);
             xml.insert(txn, index, value);
             Ok(atoms::ok())
@@ -154,6 +157,7 @@ fn xml_fragment_insert_and_get(
     ENV.set(&mut env.clone(), || {
         xml.mutably(env, current_transaction, |txn| {
             let xml = xml.get_ref(txn)?;
+            check_nesting(&xml, &value)?;
             let index = normalize_index_for_insert(xml.len(txn), index);
             xml.insert(txn, index, value);
 
@@ -489,6 +493,7 @@ fn xml_element_insert(
     ENV.set(&mut env.clone(), || {
         xml.mutably(env, current_transaction, |txn| {
             let xml = xml.get_ref(txn)?;
+            check_nesting(&xml, &value)?;
             let index = normalize_index_for_insert(xml.len(txn), index);
             xml.insert(txn, index, value);
             Ok(atoms::ok())
@@ -507,6 +512,7 @@ fn xml_element_insert_and_get(
     ENV.set(&mut env.clone(), || {
         xml.mutably(env, current_transaction, |txn| {
             let xml = xml.get_ref(txn)?;
+            check_nesting(&xml, &value)?;
             let index = normalize_index_for_insert(xml.len(txn), index);
             xml.insert(txn, index, value);
             xml.get(txn, index)
@@ -582,6 +588,7 @@ fn xml_element_insert_attribute(
 ) -> NifResult<Atom> {
     xml.mutably(env, current_transaction, |txn| {
         let xml = xml.get_ref(txn)?;
+        check_nesting(&xml, &value)?;
         value.ensure_insertable(txn)?;
         xml.insert_attribute(txn, key, value);
         Ok(atoms::ok())
@@ -731,6 +738,7 @@ fn xml_text_insert_embed(
 ) -> NifResult<Atom> {
     xml.mutably(env, current_transaction, |txn| {
         let xml = xml.get_ref(txn)?;
+        check_nesting(&xml, &embed)?;
         embed.ensure_insertable(txn)?;
         let index = normalize_index_for_insert(xml.len(txn), index);
         let mut delta = Vec::with_capacity(2);
@@ -754,6 +762,7 @@ fn xml_text_insert_embed_with_attributes(
 ) -> NifResult<Atom> {
     xml.mutably(env, current_transaction, |txn| {
         let xml = xml.get_ref(txn)?;
+        check_nesting(&xml, &embed)?;
         embed.ensure_insertable(txn)?;
         let index = normalize_index_for_insert(xml.len(txn), index);
         let mut delta = Vec::with_capacity(2);
@@ -824,6 +833,7 @@ fn xml_text_apply_delta(
 ) -> NifResult<Atom> {
     xml.mutably(env, current_transaction, |txn| {
         let xml = xml.get_ref(txn)?;
+        check_nesting(&xml, &delta)?;
         delta.ensure_insertable(txn)?;
         xml.apply_delta(txn, delta.0);
         Ok(atoms::ok())
@@ -946,6 +956,7 @@ fn xml_text_insert_attribute(
 ) -> NifResult<Atom> {
     xml.mutably(env, current_transaction, |txn| {
         let xml = xml.get_ref(txn)?;
+        check_nesting(&xml, &value)?;
         value.ensure_insertable(txn)?;
         xml.insert_attribute(txn, key, value);
         Ok(atoms::ok())

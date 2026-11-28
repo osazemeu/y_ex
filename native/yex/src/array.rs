@@ -9,7 +9,7 @@ use crate::{
     shared_type::{NifSharedType, SharedTypeId},
     transaction::TransactionResource,
     utils::{capped_index_and_length, normalize_index, normalize_index_for_insert},
-    yinput::{NifWeakPrelim, NifYInput},
+    yinput::{check_nesting, NifWeakPrelim, NifYInput},
     youtput::NifYOut,
     NifAny,
 };
@@ -57,6 +57,7 @@ fn array_insert(
 ) -> NifResult<Atom> {
     array.mutably(env, current_transaction, |txn| {
         let array = array.get_ref(txn)?;
+        check_nesting(&array, &value)?;
 
         let index = normalize_index_for_insert(array.len(txn), index);
 
@@ -92,6 +93,7 @@ fn array_insert_and_get(
     let doc = array.doc();
     array.mutably(env, current_transaction, |txn| {
         let array = array.get_ref(txn)?;
+        check_nesting(&array, &value)?;
         let index = normalize_index_for_insert(array.len(txn), index);
         value.ensure_insertable(txn)?;
         array.insert(txn, index, value);

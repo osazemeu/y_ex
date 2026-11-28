@@ -6,8 +6,10 @@ defmodule Yex.DepthCapTest do
   use ExUnit.Case, async: true
 
   alias Yex.{
+    ArrayPrelim,
     Doc,
     MapPrelim,
+    TextPrelim,
     XmlElement,
     XmlElementPrelim,
     XmlFragment,
@@ -34,10 +36,27 @@ defmodule Yex.DepthCapTest do
 
   defp apply_dirty(doc, update), do: Yex.Nif.apply_update_v1_dirty(doc, nil, update)
 
-  # A doc whose root map "m" holds `levels` nested maps under key "c", built one
-  # level per local write (local writes do not pass yrs' integrate cap).
+  # A v1 update from client 1 whose root map "m" holds `levels` nested maps under key
+  # "c", written by hand: local writes stop at the type cap, so a chain past it can only
+  # arrive as an update. Each struct is a Type item (info 7 | 0x20 for its parent key, no
+  # origins), parented by the root name for the first and by the previous item's ID after
+  # that, holding a YMap (type ref 1). The delete set is empty.
   defp nested_maps_state(levels) do
-    doc = Doc.new()
+    structs =
+      for clock <- 0..(levels - 1)//1, into: <<>> do
+        parent = if clock == 0, do: <<1, 1, "m">>, else: <<0, 1>> <> varuint(clock - 1)
+        <<0x27>> <> parent <> <<1, "c", 1>>
+      end
+
+    <<1>> <> varuint(levels) <> <<1, 0>> <> structs <> <<0>>
+  end
+
+  defp varuint(n) when n < 0x80, do: <<n>>
+  defp varuint(n), do: <<0x80 + Bitwise.band(n, 0x7F)>> <> varuint(Bitwise.bsr(n, 7))
+
+  # The same chain built one local write at a time, from client 1.
+  defp local_nested_maps_state(levels) do
+    doc = Doc.with_options(%Doc.Options{client_id: 1})
     root = Doc.get_map(doc, "m")
 
     Doc.transaction(doc, fn ->
@@ -101,6 +120,144 @@ defmodule Yex.DepthCapTest do
         assert doc |> Doc.get_map("m") |> Yex.Nif.map_to_json_dirty(nil) |> map_depth() ==
                  @type_cap
       end
+    end
+  end
+
+  describe "a hand-encoded chain" do
+    test "is byte-equal to the chain built locally, at 10 levels" do
+      assert nested_maps_state(10) == local_nested_maps_state(10)
+    end
+  end
+
+  describe "a local insert under a nested parent" do
+    # `depth` levels below root "m": a chain of maps, then `container` at the last level.
+    defp container_at(depth, container) do
+      doc = Doc.new()
+      root = Doc.get_map(doc, "m")
+
+      parent =
+        Enum.reduce(1..(depth - 1)//1, root, fn _, parent ->
+          Yex.Map.set_and_get(parent, "c", MapPrelim.from(%{}))
+        end)
+
+      {doc, Yex.Map.set_and_get(parent, "x", container)}
+    end
+
+    # `levels` nested MapPrelims, the innermost empty.
+    defp map_prelim(levels),
+      do:
+        Enum.reduce(2..levels//1, MapPrelim.from(%{}), fn _, inner ->
+          MapPrelim.from(%{"c" => inner})
+        end)
+
+    defp xml_prelim(levels),
+      do:
+        Enum.reduce(2..levels//1, XmlElementPrelim.empty("e"), fn _, inner ->
+          XmlElementPrelim.new("e", [inner])
+        end)
+
+    # Every insert NIF, with the container it inserts into and a value `levels` deep.
+    defp insert_calls(levels) do
+      map = map_prelim(levels)
+      xml = xml_prelim(levels)
+      delta = [%{"insert" => map}]
+      attr = %{"b" => true}
+
+      [
+        map_set: {MapPrelim.from(%{}), &Yex.Nif.map_set(&1, nil, "k", map)},
+        array_insert: {ArrayPrelim.from([]), &Yex.Nif.array_insert(&1, nil, 0, map)},
+        array_insert_and_get:
+          {ArrayPrelim.from([]), &Yex.Nif.array_insert_and_get(&1, nil, 0, map)},
+        text_insert_embed: {TextPrelim.from(""), &Yex.Nif.text_insert_embed(&1, nil, 0, map)},
+        text_insert_embed_with_attributes:
+          {TextPrelim.from(""), &Yex.Nif.text_insert_embed_with_attributes(&1, nil, 0, map, attr)},
+        text_apply_delta: {TextPrelim.from(""), &Yex.Nif.text_apply_delta(&1, nil, delta)},
+        xml_fragment_insert:
+          {XmlFragmentPrelim.new([]), &Yex.Nif.xml_fragment_insert(&1, nil, 0, xml)},
+        xml_fragment_insert_and_get:
+          {XmlFragmentPrelim.new([]), &Yex.Nif.xml_fragment_insert_and_get(&1, nil, 0, xml)},
+        xml_element_insert:
+          {XmlElementPrelim.empty("p"), &Yex.Nif.xml_element_insert(&1, nil, 0, xml)},
+        xml_element_insert_and_get:
+          {XmlElementPrelim.empty("p"), &Yex.Nif.xml_element_insert_and_get(&1, nil, 0, xml)},
+        xml_element_insert_attribute:
+          {XmlElementPrelim.empty("p"), &Yex.Nif.xml_element_insert_attribute(&1, nil, "a", map)},
+        xml_text_insert_embed:
+          {XmlTextPrelim.from(""), &Yex.Nif.xml_text_insert_embed(&1, nil, 0, map)},
+        xml_text_insert_embed_with_attributes:
+          {XmlTextPrelim.from(""),
+           &Yex.Nif.xml_text_insert_embed_with_attributes(&1, nil, 0, map, attr)},
+        xml_text_apply_delta:
+          {XmlTextPrelim.from(""), &Yex.Nif.xml_text_apply_delta(&1, nil, delta)},
+        xml_text_insert_attribute:
+          {XmlTextPrelim.from(""), &Yex.Nif.xml_text_insert_attribute(&1, nil, "a", map)}
+      ]
+    end
+
+    test "raises for every insert NIF when parent and prelim pass the cap, writing nothing" do
+      # parent depth 100 + prelim 29 = 129
+      for {name, {container, call}} <- insert_calls(29) do
+        {doc, parent} = container_at(100, container)
+        before = Yex.encode_state_vector!(doc)
+
+        message =
+          try do
+            call.(parent)
+            nil
+          rescue
+            error in ArgumentError -> error.message
+          end
+
+        assert is_binary(message) and message =~ "deeper than #{@type_cap} levels",
+               "#{name} did not raise: #{inspect(message)}"
+
+        assert Yex.encode_state_vector!(doc) == before, "#{name} wrote"
+      end
+    end
+
+    test "at the cap every insert NIF writes a state a fresh doc applies" do
+      # parent depth 100 + prelim 28 = 128
+      for {name, {container, call}} <- insert_calls(28) do
+        {doc, parent} = container_at(100, container)
+        call.(parent)
+        state = Yex.encode_state_as_update!(doc)
+
+        for apply <- [&Yex.apply_update/2, &apply_dirty/2] do
+          assert :ok = apply.(Doc.new(), state), "#{name} did not reload"
+        end
+      end
+    end
+
+    test "one level per call stops at the cap, and the chain reloads" do
+      doc = Doc.new()
+      root = Doc.get_map(doc, "m")
+
+      deepest =
+        Enum.reduce(1..@type_cap, root, fn _, parent ->
+          Yex.Map.set_and_get(parent, "c", MapPrelim.from(%{}))
+        end)
+
+      before = Yex.encode_state_vector!(doc)
+
+      assert_raise ArgumentError, ~r/deeper than #{@type_cap} levels/, fn ->
+        Yex.Map.set(deepest, "c", MapPrelim.from(%{}))
+      end
+
+      assert Yex.encode_state_vector!(doc) == before
+      fresh = Doc.new()
+      assert :ok = Yex.apply_update(fresh, Yex.encode_state_as_update!(doc))
+      assert fresh |> Doc.get_map("m") |> Yex.Map.to_json() |> map_depth() == @type_cap
+    end
+
+    test "an Any value is not counted, however deep the parent" do
+      {doc, deepest} = container_at(@type_cap, MapPrelim.from(%{}))
+      deep_map = Enum.reduce(1..(@any_cap - 1), %{}, fn _, inner -> %{"c" => inner} end)
+
+      assert :ok = Yex.Map.set(deepest, "a", deep_map)
+      assert :ok = Yex.Map.set(deepest, "l", nested_list(@any_cap))
+      assert_raise ArgumentError, fn -> Yex.Map.set(deepest, "p", MapPrelim.from(%{})) end
+
+      assert :ok = Yex.apply_update(Doc.new(), Yex.encode_state_as_update!(doc))
     end
   end
 

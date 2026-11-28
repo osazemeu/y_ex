@@ -27,7 +27,8 @@ nif_version_2_17 = ["rustler/nif_version_2_17"]
 # Rejects a client listed twice (in blocks or the delete set), a clock range
 # past u32::MAX, a block that does not fit integrated content, an Any nested
 # past 127 levels and a shared type nested past 128 levels when decoding or
-# applying an update (osazemeu/y-crdt legendary/depth-caps-0.28.2 on yrs
-# v0.28.2). Drop this once an upstream yrs release rejects these shapes.
+# applying an update, and adds Branch::depth for the local-insert depth check
+# (osazemeu/y-crdt legendary/depth-caps-0.28.2 on yrs v0.28.2). Drop this once
+# an upstream yrs release rejects these shapes and caps local inserts.
 [patch.crates-io]
-yrs = { git = "https://github.com/osazemeu/y-crdt", rev = "e202671d4a26d6756979c51373dd26d2a5c12e97" }
+yrs = { git = "https://github.com/osazemeu/y-crdt", rev = "d97075f8ee1db9adc934684825d9bc33c50b89b3" }
